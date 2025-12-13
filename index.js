@@ -8,6 +8,7 @@ const User = require('./models/User');
 const Transaction = require('./models/Transaction');
 const Group = require('./models/Group');
 
+
 // --- 2. DEFINE ASSOCIATIONS ---
 User.hasMany(Transaction, { as: 'SentTransactions', foreignKey: 'senderId' });
 User.hasMany(Transaction, { as: 'ReceivedTransactions', foreignKey: 'receiverId' });
@@ -43,11 +44,13 @@ const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/user');
 const groupRoutes = require('./routes/groups');
 const walletRoutes = require('./routes/wallet');
+const vendorManagementRoutes = require('./routes/vendorManagement');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/groups', groupRoutes);
 app.use('/api/wallet', walletRoutes);
+app.use('/api/vendor-management', vendorManagementRoutes);
 
 app.get('/', (req, res) => {
   res.send('Shaastra Wallet API is running with PostgreSQL... 🚀');

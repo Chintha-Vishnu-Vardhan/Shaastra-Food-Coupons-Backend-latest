@@ -12,11 +12,12 @@ router.use(authMiddleware, isFinanceCore);
 
 /**
  * GET /api/vendor-management/user/:userId/transactions
- * Fetch all transactions for a specific user by their userId (roll number)
+ * Supports date filtering via query params: ?startDate=ISOString&endDate=ISOString
  */
 router.get('/user/:userId/transactions', async (req, res) => {
   try {
     const { userId } = req.params;
+    const { startDate, endDate } = req.query; // Get filter params
 
     // First, find the user
     const user = await User.findOne({ 
@@ -28,14 +29,24 @@ router.get('/user/:userId/transactions', async (req, res) => {
       return res.status(404).json({ message: 'User not found.' });
     }
 
-    // Fetch all transactions involving this user
+    // Build the Where Clause
+    const whereClause = {
+      [Op.or]: [
+        { senderId: user.id },
+        { receiverId: user.id }
+      ]
+    };
+
+    // If both dates are provided, add the time filter
+    if (startDate && endDate) {
+      whereClause.createdAt = {
+        [Op.between]: [new Date(startDate), new Date(endDate)]
+      };
+    }
+
+    // Fetch transactions with the dynamic whereClause
     const transactions = await Transaction.findAll({
-      where: {
-        [Op.or]: [
-          { senderId: user.id },
-          { receiverId: user.id }
-        ]
-      },
+      where: whereClause,
       order: [['createdAt', 'DESC']]
     });
 
@@ -52,11 +63,12 @@ router.get('/user/:userId/transactions', async (req, res) => {
 
 /**
  * GET /api/vendor-management/user/:userId/statement
- * Generate detailed statement with date-wise summary
+ * Supports date filtering via query params
  */
 router.get('/user/:userId/statement', async (req, res) => {
   try {
     const { userId } = req.params;
+    const { startDate, endDate } = req.query; // Get filter params
 
     // Find the user
     const user = await User.findOne({ 
@@ -68,18 +80,28 @@ router.get('/user/:userId/statement', async (req, res) => {
       return res.status(404).json({ message: 'User not found.' });
     }
 
-    // Fetch all transactions
+    // Build the Where Clause
+    const whereClause = {
+      [Op.or]: [
+        { senderId: user.id },
+        { receiverId: user.id }
+      ]
+    };
+
+    // If both dates are provided, add the time filter
+    if (startDate && endDate) {
+      whereClause.createdAt = {
+        [Op.between]: [new Date(startDate), new Date(endDate)]
+      };
+    }
+
+    // Fetch transactions
     const transactions = await Transaction.findAll({
-      where: {
-        [Op.or]: [
-          { senderId: user.id },
-          { receiverId: user.id }
-        ]
-      },
+      where: whereClause,
       order: [['createdAt', 'ASC']] // Chronological order for statement
     });
 
-    // Calculate totals
+    // Calculate totals (Note: These totals will now apply ONLY to the filtered range)
     let totalReceived = 0;
     let totalSent = 0;
 
@@ -122,7 +144,7 @@ router.get('/user/:userId/statement', async (req, res) => {
 
     const netAmount = totalReceived - totalSent;
 
-    // Convert dateSummary object to array for easier frontend use
+    // Convert dateSummary object to array
     const dateSummaryArray = Object.entries(dateSummary).map(([date, summary]) => ({
       date,
       ...summary
@@ -134,8 +156,12 @@ router.get('/user/:userId/statement', async (req, res) => {
         totalReceived,
         totalSent,
         netAmount,
-        currentBalance: user.balance,
-        transactionCount: transactions.length
+        // Current Balance is ALWAYS the live balance, regardless of date filter
+        currentBalance: user.balance, 
+        // Range Balance (optional: helps you see balance specifically for this period)
+        periodNetAmount: netAmount,
+        transactionCount: transactions.length,
+        isFiltered: !!(startDate && endDate)
       },
       dateSummary: dateSummaryArray,
       transactions: transactions
@@ -149,8 +175,7 @@ router.get('/user/:userId/statement', async (req, res) => {
 
 /**
  * GET /api/vendor-management/vendors
- * Get list of all vendors (users with Volunteer or Coordinator role)
- * Useful for quick vendor lookup
+ * (Unchanged)
  */
 router.get('/vendors', async (req, res) => {
   try {

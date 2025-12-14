@@ -2,12 +2,13 @@ const express = require('express');
 const dotenv = require('dotenv');
 const cors = require('cors');
 const { sequelize } = require('./config/database');
+const http = require('http'); // [Import 1]
+const { Server } = require('socket.io'); // [Import 2]
 
 // --- 1. IMPORT ALL MODELS ---
 const User = require('./models/User');
 const Transaction = require('./models/Transaction');
 const Group = require('./models/Group');
-
 
 // --- 2. DEFINE ASSOCIATIONS ---
 User.hasMany(Transaction, { as: 'SentTransactions', foreignKey: 'senderId' });
@@ -23,6 +24,44 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+// [Change 1] Create HTTP server
+const server = http.createServer(app);
+
+// [Change 2] Initialize Socket.io
+const io = new Server(server, {
+  cors: {
+    origin: "http://localhost:3000", // Frontend URL
+    methods: ["GET", "POST"],
+    credentials: true
+  }
+});
+
+// [Change 3] Track Online Users (Map UserId -> SocketId)
+const onlineUsers = new Map();
+
+io.on("connection", (socket) => {
+  // When frontend connects, it sends 'join_room' with userId
+  socket.on("join_room", (userId) => {
+    onlineUsers.set(userId, socket.id);
+    console.log(`User ${userId} connected with socket ${socket.id}`);
+  });
+
+  socket.on("disconnect", () => {
+    // Optional: Cleanup if needed
+    // Iterate entries to remove the disconnected socket if you want strict cleanup
+    for (let [id, socketId] of onlineUsers.entries()) {
+      if (socketId === socket.id) {
+        onlineUsers.delete(id);
+        break;
+      }
+    }
+  });
+});
+
+// Make 'io' and 'onlineUsers' accessible in routes
+app.set('io', io);
+app.set('onlineUsers', onlineUsers);
 
 const testDbConnection = async () => {
   try {
@@ -56,6 +95,7 @@ app.get('/', (req, res) => {
   res.send('Shaastra Wallet API is running with PostgreSQL... 🚀');
 });
 
-app.listen(PORT, () => {
+// [Change 4] Use server.listen instead of app.listen
+server.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });

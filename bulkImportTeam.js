@@ -183,7 +183,7 @@ async function bulkImportFromCSV(csvFilePath) {
 
 const csvFile =
   process.argv[2] ||
-  path.join(__dirname, 'Finance team details.csv');
+  path.join(__dirname, 'S&E Team details.csv');
 
 console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 console.log('🚀 SHAASTRA TEAM BULK IMPORT');

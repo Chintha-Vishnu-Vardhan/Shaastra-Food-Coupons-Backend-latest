@@ -1,4 +1,4 @@
-// routes/vendorManagement.js
+// routes/vendorManagement.js - WITH RATE LIMITING
 const express = require('express');
 const router = express.Router();
 const { Op } = require('sequelize');
@@ -6,20 +6,20 @@ const User = require('../models/User');
 const Transaction = require('../models/Transaction');
 const authMiddleware = require('../middleware/authMiddleware');
 const { isFinanceCore } = require('../middleware/roleMiddleware');
+const { vendorLimiter } = require('../middleware/rateLimiter');
 
-// Apply both middleware to all routes
-router.use(authMiddleware, isFinanceCore);
+// Apply middleware to all routes
+router.use(authMiddleware, isFinanceCore, vendorLimiter);
 
 /**
  * GET /api/vendor-management/user/:userId/transactions
- * Supports date filtering via query params: ?startDate=ISOString&endDate=ISOString
+ * ✅ RATE LIMITED: 20 requests per minute
  */
 router.get('/user/:userId/transactions', async (req, res) => {
   try {
     const { userId } = req.params;
-    const { startDate, endDate } = req.query; // Get filter params
+    const { startDate, endDate } = req.query;
 
-    // First, find the user
     const user = await User.findOne({ 
       where: { userId: userId.toUpperCase() },
       attributes: ['id', 'name', 'userId', 'contact', 'smail', 'role', 'department', 'balance']
@@ -29,7 +29,6 @@ router.get('/user/:userId/transactions', async (req, res) => {
       return res.status(404).json({ message: 'User not found.' });
     }
 
-    // Build the Where Clause
     const whereClause = {
       [Op.or]: [
         { senderId: user.id },
@@ -37,14 +36,12 @@ router.get('/user/:userId/transactions', async (req, res) => {
       ]
     };
 
-    // If both dates are provided, add the time filter
     if (startDate && endDate) {
       whereClause.createdAt = {
         [Op.between]: [new Date(startDate), new Date(endDate)]
       };
     }
 
-    // Fetch transactions with the dynamic whereClause
     const transactions = await Transaction.findAll({
       where: whereClause,
       order: [['createdAt', 'DESC']]
@@ -63,14 +60,13 @@ router.get('/user/:userId/transactions', async (req, res) => {
 
 /**
  * GET /api/vendor-management/user/:userId/statement
- * Supports date filtering via query params
+ * ✅ RATE LIMITED: 20 requests per minute
  */
 router.get('/user/:userId/statement', async (req, res) => {
   try {
     const { userId } = req.params;
-    const { startDate, endDate } = req.query; // Get filter params
+    const { startDate, endDate } = req.query;
 
-    // Find the user
     const user = await User.findOne({ 
       where: { userId: userId.toUpperCase() },
       attributes: ['id', 'name', 'userId', 'contact', 'smail', 'role', 'department', 'balance']
@@ -80,7 +76,6 @@ router.get('/user/:userId/statement', async (req, res) => {
       return res.status(404).json({ message: 'User not found.' });
     }
 
-    // Build the Where Clause
     const whereClause = {
       [Op.or]: [
         { senderId: user.id },
@@ -88,24 +83,19 @@ router.get('/user/:userId/statement', async (req, res) => {
       ]
     };
 
-    // If both dates are provided, add the time filter
     if (startDate && endDate) {
       whereClause.createdAt = {
         [Op.between]: [new Date(startDate), new Date(endDate)]
       };
     }
 
-    // Fetch transactions
     const transactions = await Transaction.findAll({
       where: whereClause,
-      order: [['createdAt', 'ASC']] // Chronological order for statement
+      order: [['createdAt', 'ASC']]
     });
 
-    // Calculate totals (Note: These totals will now apply ONLY to the filtered range)
     let totalReceived = 0;
     let totalSent = 0;
-
-    // Date-wise summary object
     const dateSummary = {};
 
     transactions.forEach(tx => {
@@ -115,7 +105,6 @@ router.get('/user/:userId/statement', async (req, res) => {
         day: 'numeric'
       });
 
-      // Initialize date entry if not exists
       if (!dateSummary[txDate]) {
         dateSummary[txDate] = {
           received: 0,
@@ -124,27 +113,22 @@ router.get('/user/:userId/statement', async (req, res) => {
         };
       }
 
-      // Check if user is sender or receiver
       const isSender = tx.senderUserId === user.userId;
       const isTopUp = tx.senderUserId === tx.receiverUserId;
 
       if (isSender && !isTopUp) {
-        // User sent money
         totalSent += tx.amount;
         dateSummary[txDate].sent += tx.amount;
       } else {
-        // User received money (including top-ups)
         totalReceived += tx.amount;
         dateSummary[txDate].received += tx.amount;
       }
 
-      // Update net for the date
       dateSummary[txDate].net = dateSummary[txDate].received - dateSummary[txDate].sent;
     });
 
     const netAmount = totalReceived - totalSent;
 
-    // Convert dateSummary object to array
     const dateSummaryArray = Object.entries(dateSummary).map(([date, summary]) => ({
       date,
       ...summary
@@ -156,9 +140,7 @@ router.get('/user/:userId/statement', async (req, res) => {
         totalReceived,
         totalSent,
         netAmount,
-        // Current Balance is ALWAYS the live balance, regardless of date filter
-        currentBalance: user.balance, 
-        // Range Balance (optional: helps you see balance specifically for this period)
+        currentBalance: user.balance,
         periodNetAmount: netAmount,
         transactionCount: transactions.length,
         isFiltered: !!(startDate && endDate)
@@ -175,7 +157,7 @@ router.get('/user/:userId/statement', async (req, res) => {
 
 /**
  * GET /api/vendor-management/vendors
- * (Unchanged)
+ * ✅ RATE LIMITED: 20 requests per minute
  */
 router.get('/vendors', async (req, res) => {
   try {

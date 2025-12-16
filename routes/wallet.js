@@ -1,4 +1,4 @@
-// routes/wallet.js - WITH S-PIN VERIFICATION + RATE LIMITING
+// routes/wallet.js - WITH S-PIN VERIFICATION + RATE LIMITING + PERFORMANCE OPTIMIZATIONS + PAGINATION
 const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
@@ -125,22 +125,110 @@ router.post('/send', [authMiddleware, transactionLimiter], async (req, res) => {
 // ============================================
 // GET /api/wallet/history
 // ✅ RATE LIMITED: 100 requests per 15 minutes
+// ✅ UX IMPROVEMENT: Added pagination and search/filter
 // ============================================
 router.get('/history', [authMiddleware, apiLimiter], async (req, res) => {
   try {
-    const transactions = await Transaction.findAll({
-      where: { 
-        [Op.or]: [
-          { senderId: req.user.id }, 
-          { receiverId: req.user.id }
-        ] 
-      },
-      order: [['createdAt', 'DESC']]
+    // ============================================
+    // ✅ NEW: Pagination parameters
+    // ============================================
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const offset = (page - 1) * limit;
+
+    // ============================================
+    // ✅ NEW: Search and filter parameters
+    // ============================================
+    const searchQuery = req.query.search || '';
+    const startDate = req.query.startDate;
+    const endDate = req.query.endDate;
+    const txType = req.query.type; // 'sent', 'received', 'topup'
+
+    // Build where clause
+    let whereClause = {
+      [Op.or]: [
+        { senderId: req.user.id }, 
+        { receiverId: req.user.id }
+      ]
+    };
+
+    // ============================================
+    // ✅ NEW: Search by name or userId
+    // ============================================
+    if (searchQuery) {
+      whereClause[Op.and] = [
+        {
+          [Op.or]: [
+            { senderName: { [Op.iLike]: `%${searchQuery}%` } },
+            { receiverName: { [Op.iLike]: `%${searchQuery}%` } },
+            { senderUserId: { [Op.iLike]: `%${searchQuery}%` } },
+            { receiverUserId: { [Op.iLike]: `%${searchQuery}%` } }
+          ]
+        }
+      ];
+    }
+
+    // ============================================
+    // ✅ NEW: Date range filter
+    // ============================================
+    if (startDate && endDate) {
+      if (!whereClause[Op.and]) whereClause[Op.and] = [];
+      whereClause[Op.and].push({
+        createdAt: {
+          [Op.between]: [new Date(startDate), new Date(endDate)]
+        }
+      });
+    }
+
+    // ============================================
+    // ✅ NEW: Transaction type filter
+    // ============================================
+    if (txType) {
+      if (txType === 'sent') {
+        // Only sent transactions (exclude topups)
+        whereClause.senderId = req.user.id;
+        if (!whereClause[Op.and]) whereClause[Op.and] = [];
+        whereClause[Op.and].push({
+          [Op.not]: { senderId: { [Op.col]: 'receiverId' } }
+        });
+      } else if (txType === 'received') {
+        // Only received transactions (exclude topups)
+        whereClause.receiverId = req.user.id;
+        if (!whereClause[Op.and]) whereClause[Op.and] = [];
+        whereClause[Op.and].push({
+          [Op.not]: { senderId: { [Op.col]: 'receiverId' } }
+        });
+      } else if (txType === 'topup') {
+        // Only topup transactions
+        whereClause.senderId = req.user.id;
+        whereClause.receiverId = req.user.id;
+      }
+    }
+
+    // ============================================
+    // ✅ NEW: Fetch paginated results
+    // ============================================
+    const { count, rows } = await Transaction.findAndCountAll({
+      where: whereClause,
+      order: [['createdAt', 'DESC']],
+      limit,
+      offset
     });
-    res.json(transactions);
+
+    res.json({
+      transactions: rows,
+      pagination: {
+        totalPages: Math.ceil(count / limit),
+        currentPage: page,
+        totalTransactions: count,
+        hasNextPage: page < Math.ceil(count / limit),
+        hasPrevPage: page > 1
+      }
+    });
+
   } catch (error) {
     console.error('History fetch error:', error);
-    res.status(500).send('Server Error');
+    res.status(500).json({ message: 'Server error fetching history.' });
   }
 });
 
@@ -201,6 +289,7 @@ router.post('/topup', [authMiddleware, isFinanceCore, transactionLimiter], async
 // ============================================
 // POST /api/wallet/send-group - GROUP SEND
 // ✅ RATE LIMITED: 10 transactions per minute
+// ✅ PERFORMANCE OPTIMIZATION: Fixed N+1 query problem
 // ============================================
 router.post('/send-group', [authMiddleware, isCore, transactionLimiter], async (req, res) => {
   try {
@@ -227,26 +316,49 @@ router.post('/send-group', [authMiddleware, isCore, transactionLimiter], async (
         throw new Error('Insufficient balance for group transaction.');
       }
 
+      // ============================================
+      // ✅ PERFORMANCE OPTIMIZATION: Batch fetch all receivers in one query
+      // OLD: Was fetching receivers one by one in a loop (N+1 problem)
+      // NEW: Fetch all receivers at once with a single query
+      // ============================================
+      const receiverIds = recipients.map(r => r.receiverId.toUpperCase());
+      const receivers = await User.findAll({ 
+        where: { userId: { [Op.in]: receiverIds } },
+        transaction: t 
+      });
+
+      // Create a map for quick lookup
+      const receiverMap = new Map();
+      receivers.forEach(receiver => {
+        receiverMap.set(receiver.userId, receiver);
+      });
+
+      // Validate all receivers exist
+      const missingReceivers = receiverIds.filter(id => !receiverMap.has(id));
+      if (missingReceivers.length > 0) {
+        throw new Error(`Receiver(s) not found: ${missingReceivers.join(', ')}`);
+      }
+
       const io = req.app.get('io');
       const onlineUsers = req.app.get('onlineUsers');
       const successfulTransactions = [];
+      const transactionsToCreate = [];
 
+      // ============================================
+      // ✅ PERFORMANCE OPTIMIZATION: Batch operations
+      // Process all recipients and prepare bulk operations
+      // ============================================
       for (const r of recipients) {
-        const receiver = await User.findOne({ 
-          where: { userId: r.receiverId.toUpperCase() }, 
-          transaction: t 
-        });
-        
-        if (!receiver) { 
-          throw new Error(`Receiver with ID ${r.receiverId} not found.`); 
-        }
+        const receiver = receiverMap.get(r.receiverId.toUpperCase());
 
         sender.balance -= r.amount;
         receiver.balance += r.amount;
 
+        // Save receiver balance
         await receiver.save({ transaction: t });
 
-        const newTxn = await Transaction.create({
+        // Prepare transaction data for bulk insert
+        transactionsToCreate.push({
           senderId: sender.id, 
           receiverId: receiver.id,
           senderName: sender.name, 
@@ -254,14 +366,26 @@ router.post('/send-group', [authMiddleware, isCore, transactionLimiter], async (
           senderUserId: sender.userId, 
           receiverUserId: receiver.userId,
           amount: r.amount
-        }, { transaction: t });
+        });
 
         successfulTransactions.push({
           to: receiver.name,
           amount: r.amount
         });
+      }
 
-        // Real-time notification
+      // ============================================
+      // ✅ PERFORMANCE OPTIMIZATION: Bulk create transactions
+      // OLD: Created transactions one by one in the loop
+      // NEW: Create all transactions at once
+      // ============================================
+      const createdTransactions = await Transaction.bulkCreate(transactionsToCreate, { transaction: t });
+
+      // Send real-time notifications
+      createdTransactions.forEach((newTxn, index) => {
+        const r = recipients[index];
+        const receiver = receiverMap.get(r.receiverId.toUpperCase());
+        
         const receiverSocketId = onlineUsers.get(receiver.userId);
         if (receiverSocketId) {
             io.to(receiverSocketId).emit("transaction_received", {
@@ -272,7 +396,7 @@ router.post('/send-group', [authMiddleware, isCore, transactionLimiter], async (
                type: 'credit'
             });
         }
-      }
+      });
 
       await sender.save({ transaction: t });
       

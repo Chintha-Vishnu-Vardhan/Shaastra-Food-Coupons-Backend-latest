@@ -1,3 +1,4 @@
+// models/Transaction.js
 const { DataTypes } = require('sequelize');
 const { sequelize } = require('../config/database');
 
@@ -23,7 +24,34 @@ const Transaction = sequelize.define('Transaction', {
     allowNull: false
   }
 }, {
-  timestamps: true
+  timestamps: true,
+  // ============================================
+  // ✅ PERFORMANCE OPTIMIZATION: Added indexes
+  // These indexes will dramatically speed up queries that filter by senderId, receiverId, or createdAt
+  // Composite indexes optimize queries that use both fields together
+  // ============================================
+  indexes: [
+    {
+      name: 'idx_sender_id',
+      fields: ['senderId']
+    },
+    {
+      name: 'idx_receiver_id',
+      fields: ['receiverId']
+    },
+    {
+      name: 'idx_created_at',
+      fields: ['createdAt']
+    },
+    {
+      name: 'idx_sender_created',
+      fields: ['senderId', 'createdAt']
+    },
+    {
+      name: 'idx_receiver_created',
+      fields: ['receiverId', 'createdAt']
+    }
+  ]
 });
 
 module.exports = Transaction;

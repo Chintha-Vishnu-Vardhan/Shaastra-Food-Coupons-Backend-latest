@@ -15,10 +15,7 @@ const authLimiter = rateLimit({
   legacyHeaders: false, // Disable `X-RateLimit-*` headers
   skipSuccessfulRequests: false, // Count successful requests
   skipFailedRequests: false, // Count failed requests
-  // Custom key generator - rate limit by IP + user agent for better security
-  keyGenerator: (req) => {
-    return req.ip + req.headers['user-agent'];
-  },
+  // Use default IP-based keyGenerator (handles IPv6 correctly)
   // Handler for when limit is exceeded
   handler: (req, res) => {
     res.status(429).json({
@@ -43,7 +40,7 @@ const transactionLimiter = rateLimit({
   skipSuccessfulRequests: false,
   // Key by user ID (from JWT) instead of IP for authenticated routes
   keyGenerator: (req) => {
-    return req.user ? req.user.id.toString() : req.ip;
+    return req.user ? req.user.id.toString() : (req.headers['x-forwarded-for'] || req.connection.remoteAddress || req.socket && req.socket.remoteAddress || 'unknown');
   },
   handler: (req, res) => {
     res.status(429).json({
@@ -67,8 +64,8 @@ const strictLimiter = rateLimit({
   legacyHeaders: false,
   skipSuccessfulRequests: true, // Only count failed attempts
   keyGenerator: (req) => {
-    // Rate limit by email for OTP requests
-    return req.body.smail || req.ip;
+    // Rate limit by email for OTP requests; fallback to forwarded IP or socket address
+    return req.body.smail || (req.headers['x-forwarded-for'] || req.connection.remoteAddress || req.socket && req.socket.remoteAddress || 'unknown');
   },
   handler: (req, res) => {
     res.status(429).json({
@@ -91,7 +88,7 @@ const apiLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => {
-    return req.user ? req.user.id.toString() : req.ip;
+    return req.user ? req.user.id.toString() : (req.headers['x-forwarded-for'] || req.connection.remoteAddress || req.socket && req.socket.remoteAddress || 'unknown');
   },
   handler: (req, res) => {
     res.status(429).json({
@@ -114,7 +111,7 @@ const vendorLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => {
-    return req.user ? req.user.id.toString() : req.ip;
+    return req.user ? req.user.id.toString() : (req.headers['x-forwarded-for'] || req.connection.remoteAddress || req.socket && req.socket.remoteAddress || 'unknown');
   }
 });
 

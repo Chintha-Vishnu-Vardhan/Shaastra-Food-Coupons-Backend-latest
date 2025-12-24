@@ -178,4 +178,116 @@ router.get('/vendors', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/vendor-management/user/:userId/transactions/download
+ * ✅ NEW: Download transactions as CSV for a specific user
+ * ✅ RATE LIMITED: 20 requests per minute
+ */
+router.get('/user/:userId/transactions/download', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { startDate, endDate } = req.query;
+
+    // Fetch user details
+    const user = await User.findOne({ 
+      where: { userId: userId.toUpperCase() },
+      attributes: ['id', 'name', 'userId', 'contact', 'smail', 'role', 'department', 'balance']
+    });
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found.' });
+    }
+
+    // Build where clause for transactions
+    const whereClause = {
+      [Op.or]: [
+        { senderId: user.id },
+        { receiverId: user.id }
+      ]
+    };
+
+    if (startDate && endDate) {
+      whereClause.createdAt = {
+        [Op.between]: [new Date(startDate), new Date(endDate)]
+      };
+    }
+
+    // Fetch all matching transactions
+    const transactions = await Transaction.findAll({
+      where: whereClause,
+      order: [['createdAt', 'DESC']]
+    });
+
+    // Generate CSV content
+    const csvHeader = 'Date,Time,From/To ID,From/To Name,Credit,Debit\n';
+
+    
+    const csvRows = transactions.map(tx => {
+      const isSender = tx.senderUserId === user.userId;
+      const isTopUp = tx.senderUserId === tx.receiverUserId;
+
+      let fromToId = '';
+      let fromToName = '';
+      let credit = '';
+      let debit = '';
+
+      if (isTopUp) {
+        fromToId = 'SYSTEM';
+        fromToName = 'System';
+        credit = tx.amount.toFixed(2);
+      } else if (isSender) {
+        // Debit
+        fromToId = tx.receiverUserId;
+        fromToName = tx.receiverName;
+        debit = tx.amount.toFixed(2);
+      } else {
+        // Credit
+        fromToId = tx.senderUserId;
+        fromToName = tx.senderName;
+        credit = tx.amount.toFixed(2);
+      }
+
+      const dateObj = new Date(tx.createdAt);
+
+      const date = dateObj.toLocaleDateString('en-IN', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      });
+
+      const time = dateObj.toLocaleTimeString('en-IN', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      });
+
+      // Escape names for CSV safety
+      const escapedName = `"${fromToName.replace(/"/g, '""')}"`;
+
+      return `${date},${time},${fromToId},${escapedName},${credit},${debit}`;
+    }).join('\n');
+
+
+    const csvContent = csvHeader + csvRows;
+
+    // Generate filename with user ID, date range, and timestamp
+    const timestamp = new Date().toISOString().split('T')[0];
+    const dateRangeSuffix = (startDate && endDate) 
+      ? `_${new Date(startDate).toISOString().split('T')[0]}_to_${new Date(endDate).toISOString().split('T')[0]}`
+      : '';
+    const filename = `Shaastra_Transactions_${user.userId}${dateRangeSuffix}_${timestamp}.csv`;
+
+    // Set headers for CSV download
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', Buffer.byteLength(csvContent, 'utf8'));
+
+    res.send(csvContent);
+
+  } catch (error) {
+    console.error('Error downloading transactions:', error);
+    res.status(500).json({ message: 'Server error while downloading transactions.' });
+  }
+});
+
 module.exports = router;

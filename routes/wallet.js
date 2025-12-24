@@ -417,4 +417,141 @@ router.post('/send-group', [authMiddleware, isCore, transactionLimiter], async (
   }
 });
 
+// ============================================
+// GET /api/wallet/history/download
+// ✅ NEW: Download filtered transactions as CSV
+// Only accessible by Vendors
+// ============================================
+router.get('/history/download', [authMiddleware, apiLimiter], async (req, res) => {
+  try {
+    // Check if user is a Vendor
+    const user = await User.findByPk(req.user.id);
+    if (user.role !== 'Vendor') {
+      return res.status(403).json({ message: 'This feature is only available for Vendors.' });
+    }
+
+    // Use same filters as /history endpoint
+    const searchQuery = req.query.search || '';
+    const startDate = req.query.startDate;
+    const endDate = req.query.endDate;
+    const txType = req.query.type;
+
+    // Build where clause (same as pagination endpoint)
+    let whereClause = {
+      [Op.or]: [
+        { senderId: req.user.id }, 
+        { receiverId: req.user.id }
+      ]
+    };
+
+    if (searchQuery) {
+      whereClause[Op.and] = [
+        {
+          [Op.or]: [
+            { senderName: { [Op.iLike]: `%${searchQuery}%` } },
+            { receiverName: { [Op.iLike]: `%${searchQuery}%` } },
+            { senderUserId: { [Op.iLike]: `%${searchQuery}%` } },
+            { receiverUserId: { [Op.iLike]: `%${searchQuery}%` } }
+          ]
+        }
+      ];
+    }
+
+    if (startDate && endDate) {
+      if (!whereClause[Op.and]) whereClause[Op.and] = [];
+      whereClause[Op.and].push({
+        createdAt: {
+          [Op.between]: [new Date(startDate), new Date(endDate)]
+        }
+      });
+    }
+
+    if (txType) {
+      if (txType === 'sent') {
+        whereClause.senderId = req.user.id;
+        if (!whereClause[Op.and]) whereClause[Op.and] = [];
+        whereClause[Op.and].push({
+          [Op.not]: { senderId: { [Op.col]: 'receiverId' } }
+        });
+      } else if (txType === 'received') {
+        whereClause.receiverId = req.user.id;
+        if (!whereClause[Op.and]) whereClause[Op.and] = [];
+        whereClause[Op.and].push({
+          [Op.not]: { senderId: { [Op.col]: 'receiverId' } }
+        });
+      } else if (txType === 'topup') {
+        whereClause.senderId = req.user.id;
+        whereClause.receiverId = req.user.id;
+      }
+    }
+
+    // Fetch all matching transactions (no pagination for download)
+    const transactions = await Transaction.findAll({
+      where: whereClause,
+      order: [['createdAt', 'DESC']]
+    });
+
+    // Generate CSV content
+    const csvHeader = 'Date & Time,Type,Counterparty,Counterparty ID,Amount,Balance Change\n';
+    
+    const csvRows = transactions.map(tx => {
+      const isSender = tx.senderUserId === user.userId;
+      const isTopUp = tx.senderUserId === tx.receiverUserId;
+      
+      let type = '';
+      let counterparty = '';
+      let counterpartyId = '';
+      let balanceChange = '';
+      
+      if (isTopUp) {
+        type = 'Top-Up';
+        counterparty = 'System';
+        counterpartyId = 'SYSTEM';
+        balanceChange = `+${tx.amount.toFixed(2)}`;
+      } else if (isSender) {
+        type = 'Sent';
+        counterparty = tx.receiverName;
+        counterpartyId = tx.receiverUserId;
+        balanceChange = `-${tx.amount.toFixed(2)}`;
+      } else {
+        type = 'Received';
+        counterparty = tx.senderName;
+        counterpartyId = tx.senderUserId;
+        balanceChange = `+${tx.amount.toFixed(2)}`;
+      }
+      
+      const dateTime = new Date(tx.createdAt).toLocaleString('en-IN', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      });
+      
+      // Escape commas in names
+      const escapedCounterparty = `"${counterparty.replace(/"/g, '""')}"`;
+      
+      return `${dateTime},${type},${escapedCounterparty},${counterpartyId},₹${tx.amount.toFixed(2)},₹${balanceChange}`;
+    }).join('\n');
+
+    const csvContent = csvHeader + csvRows;
+
+    // Generate filename with timestamp
+    const timestamp = new Date().toISOString().split('T')[0];
+    const filename = `Shaastra_Transactions_${user.userId}_${timestamp}.csv`;
+
+    // Set headers for CSV download
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', Buffer.byteLength(csvContent, 'utf8'));
+
+    res.send(csvContent);
+
+  } catch (error) {
+    console.error('Transaction download error:', error);
+    res.status(500).json({ message: 'Server error downloading transactions.' });
+  }
+});
+
 module.exports = router;

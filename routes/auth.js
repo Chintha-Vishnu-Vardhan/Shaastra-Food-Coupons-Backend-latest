@@ -181,7 +181,9 @@ router.post('/reset-password', authLimiter, async (req, res) => {
 // ============================================
 router.post('/forgot-spin-otp', [authMiddleware, strictLimiter], async (req, res) => {
   try {
+    console.log('hi');
     const user = await User.findByPk(req.user.id);
+    console.log(user);
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     user.otp = otp;
     user.otpExpiry = Date.now() + 10 * 60 * 1000;
@@ -199,13 +201,45 @@ router.post('/forgot-spin-otp', [authMiddleware, strictLimiter], async (req, res
 // RESET S-PIN
 // ✅ RATE LIMITED: 5 attempts per 15 minutes
 // ============================================
+// ✅ IMPROVED VERSION with debugging:
 router.post('/reset-spin', [authMiddleware, authLimiter], async (req, res) => {
   try {
     const { otp, newSPin } = req.body;
+    
+    // Validation
+    if (!otp || otp.length !== 6) {
+      return res.status(400).json({ message: 'Invalid OTP format. Must be 6 digits.' });
+    }
+    
+    if (!newSPin || !/^\d{4}$/.test(newSPin)) {
+      return res.status(400).json({ message: 'S-Pin must be exactly 4 digits.' });
+    }
+
     const user = await User.findByPk(req.user.id);
 
-    if (!user || user.otp !== otp || user.otpExpiry < Date.now()) {
-      return res.status(400).json({ message: 'OTP is invalid or has expired.' });
+    if (!user) {
+      return res.status(404).json({ message: 'User not found.' });
+    }
+
+    // Debug logging (remove in production)
+    console.log('OTP Check:', {
+      provided: otp,
+      stored: user.otp,
+      expiry: user.otpExpiry,
+      now: Date.now(),
+      isExpired: user.otpExpiry < Date.now()
+    });
+
+    if (!user.otp || !user.otpExpiry) {
+      return res.status(400).json({ message: 'No OTP request found. Please request a new OTP.' });
+    }
+
+    if (user.otp !== otp) {
+      return res.status(400).json({ message: 'Invalid OTP.' });
+    }
+
+    if (user.otpExpiry < Date.now()) {
+      return res.status(400).json({ message: 'OTP has expired. Please request a new one.' });
     }
 
     const sPinSalt = await bcrypt.genSalt(10);

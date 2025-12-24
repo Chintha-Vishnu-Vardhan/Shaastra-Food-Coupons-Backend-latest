@@ -492,48 +492,54 @@ router.get('/history/download', [authMiddleware, apiLimiter], async (req, res) =
     });
 
     // Generate CSV content
-    const csvHeader = 'Date & Time,Type,Counterparty,Counterparty ID,Amount,Balance Change\n';
+    const csvHeader = 'Date,Time,From/To ID,From/To Name,Credit,Debit\n';
+
     
     const csvRows = transactions.map(tx => {
       const isSender = tx.senderUserId === user.userId;
       const isTopUp = tx.senderUserId === tx.receiverUserId;
-      
-      let type = '';
-      let counterparty = '';
-      let counterpartyId = '';
-      let balanceChange = '';
-      
+
+      let fromToId = '';
+      let fromToName = '';
+      let credit = '';
+      let debit = '';
+
       if (isTopUp) {
-        type = 'Top-Up';
-        counterparty = 'System';
-        counterpartyId = 'SYSTEM';
-        balanceChange = `+${tx.amount.toFixed(2)}`;
+        fromToId = 'SYSTEM';
+        fromToName = 'System';
+        credit = tx.amount.toFixed(2);
       } else if (isSender) {
-        type = 'Sent';
-        counterparty = tx.receiverName;
-        counterpartyId = tx.receiverUserId;
-        balanceChange = `-${tx.amount.toFixed(2)}`;
+        // Debit
+        fromToId = tx.receiverUserId;
+        fromToName = tx.receiverName;
+        debit = tx.amount.toFixed(2);
       } else {
-        type = 'Received';
-        counterparty = tx.senderName;
-        counterpartyId = tx.senderUserId;
-        balanceChange = `+${tx.amount.toFixed(2)}`;
+        // Credit
+        fromToId = tx.senderUserId;
+        fromToName = tx.senderName;
+        credit = tx.amount.toFixed(2);
       }
-      
-      const dateTime = new Date(tx.createdAt).toLocaleString('en-IN', {
+
+      const dateObj = new Date(tx.createdAt);
+
+      const date = dateObj.toLocaleDateString('en-IN', {
         year: 'numeric',
         month: '2-digit',
-        day: '2-digit',
+        day: '2-digit'
+      });
+
+      const time = dateObj.toLocaleTimeString('en-IN', {
         hour: '2-digit',
         minute: '2-digit',
         second: '2-digit'
       });
-      
-      // Escape commas in names
-      const escapedCounterparty = `"${counterparty.replace(/"/g, '""')}"`;
-      
-      return `${dateTime},${type},${escapedCounterparty},${counterpartyId},₹${tx.amount.toFixed(2)},₹${balanceChange}`;
+
+      // Escape names for CSV safety
+      const escapedName = `"${fromToName.replace(/"/g, '""')}"`;
+
+      return `${date},${time},${fromToId},${escapedName},${credit},${debit}`;
     }).join('\n');
+
 
     const csvContent = csvHeader + csvRows;
 

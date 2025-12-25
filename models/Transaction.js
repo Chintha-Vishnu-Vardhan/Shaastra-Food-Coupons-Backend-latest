@@ -13,7 +13,7 @@ const Transaction = sequelize.define('Transaction', {
   },
   senderUserId: {
     type: DataTypes.STRING,
-    allowNull: true  // Allow null for system transactions like topups
+    allowNull: true
   },
   receiverUserId: {
     type: DataTypes.STRING,
@@ -22,14 +22,23 @@ const Transaction = sequelize.define('Transaction', {
   amount: {
     type: DataTypes.FLOAT,
     allowNull: false
+  },
+  // ============================================
+  // ✅ NEW FIELDS FOR ADMIN RESET FEATURE
+  // ============================================
+  type: {
+    type: DataTypes.ENUM('TRANSFER', 'TOPUP', 'ADMIN_RESET'),
+    defaultValue: 'TRANSFER',
+    allowNull: false
+  },
+  metadata: {
+    type: DataTypes.JSONB, // PostgreSQL JSON field
+    allowNull: true,
+    comment: 'Stores additional info like reset reason, admin details, etc.'
   }
+  // ============================================
 }, {
   timestamps: true,
-  // ============================================
-  // ✅ PERFORMANCE OPTIMIZATION: Added indexes
-  // These indexes will dramatically speed up queries that filter by senderId, receiverId, or createdAt
-  // Composite indexes optimize queries that use both fields together
-  // ============================================
   indexes: [
     {
       name: 'idx_sender_id',

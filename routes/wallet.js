@@ -559,5 +559,157 @@ router.get('/history/download', [authMiddleware, apiLimiter], async (req, res) =
     res.status(500).json({ message: 'Server error downloading transactions.' });
   }
 });
+// ✅ NEW: Reset user balances to zero (Finance Core only)
+// Supports three modes: all, vendors, csv
+// ============================================
+router.post('/admin-reset-balances', [authMiddleware, isFinanceCore, transactionLimiter], async (req, res) => {
+  try {
+    const { targetType, userIds, sPin, reason } = req.body;
+    
+    // Validate input
+    if (!targetType || !['all', 'vendors', 'csv'].includes(targetType)) {
+      return res.status(400).json({ message: 'Invalid target type. Must be "all", "vendors", or "csv".' });
+    }
+    
+    if ((targetType === 'vendors' || targetType === 'csv') && (!userIds || !Array.isArray(userIds) || userIds.length === 0)) {
+      return res.status(400).json({ message: 'User IDs are required for vendors or CSV mode.' });
+    }
+    
+    // Verify S-PIN
+    if (!sPin) {
+      return res.status(400).json({ message: 'S-Pin is required for balance reset.' });
+    }
+    
+    try {
+      await verifySPin(req.user.id, sPin);
+    } catch (pinError) {
+      return res.status(401).json({ message: pinError.message });
+    }
+    
+    // Execute reset in transaction
+    const result = await sequelize.transaction(async (t) => {
+      const admin = await User.findByPk(req.user.id, { transaction: t });
+      
+      // Determine target users based on mode
+      let usersToReset = [];
+      
+      if (targetType === 'all') {
+        // Reset all users EXCEPT Finance Core
+        usersToReset = await User.findAll({
+          where: {
+            [Op.or]: [
+              { role: { [Op.in]: ['Vendor', 'Head', 'Coordinator', 'Volunteer'] } },
+              {
+                [Op.and]: [
+                  { role: 'Core' },
+                  { department: { [Op.ne]: 'Finance' } }
+                ]
+              }
+            ]
+          },
+          transaction: t
+        });
+      } else if (targetType === 'vendors') {
+        // Reset only selected vendors
+        usersToReset = await User.findAll({
+          where: { 
+            userId: { [Op.in]: userIds.map(id => id.toUpperCase()) },
+            role: 'Vendor'
+          },
+          transaction: t
+        });
+      } else if (targetType === 'csv') {
+        // Reset users from CSV
+        usersToReset = await User.findAll({
+          where: { 
+            userId: { [Op.in]: userIds.map(id => id.toUpperCase()) }
+          },
+          transaction: t
+        });
+      }
+      
+      if (usersToReset.length === 0) {
+        throw new Error('No users found matching the criteria.');
+      }
+      
+      // Process each user
+      let totalAmountReset = 0;
+      let usersWithBalance = 0;
+      const resetDetails = [];
+      
+      for (const user of usersToReset) {
+        const previousBalance = user.balance;
+        
+        if (previousBalance > 0) {
+          totalAmountReset += previousBalance;
+          usersWithBalance++;
+          
+          // Create transaction record for audit trail
+          await Transaction.create({
+            senderId: user.id,
+            receiverId: user.id,
+            senderName: user.name,
+            receiverName: 'System Reset',
+            senderUserId: user.userId,
+            receiverUserId: 'ADMIN_RESET',
+            amount: previousBalance, // Store as positive for display
+            type: 'ADMIN_RESET',
+            metadata: {
+              resetBy: admin.userId,
+              resetByName: admin.name,
+              reason: reason || 'Balance reset by Finance Core',
+              previousBalance: previousBalance,
+              targetType: targetType,
+              timestamp: new Date().toISOString()
+            }
+          }, { transaction: t });
+          
+          // Reset balance to zero
+          user.balance = 0;
+          await user.save({ transaction: t });
+          
+          resetDetails.push({
+            userId: user.userId,
+            name: user.name,
+            previousBalance: previousBalance
+          });
+        }
+      }
+      
+      // Send real-time notifications to affected users
+      const io = req.app.get('io');
+      const onlineUsers = req.app.get('onlineUsers');
+      
+      for (const detail of resetDetails) {
+        const socketId = onlineUsers.get(detail.userId);
+        if (socketId) {
+          io.to(socketId).emit('balance_reset', {
+            message: `Your wallet balance of ₹${detail.previousBalance.toFixed(2)} has been reset to ₹0.00`,
+            resetBy: 'Finance Team',
+            reason: reason || 'Daily balance reset',
+            timestamp: new Date()
+          });
+        }
+      }
+      
+      return {
+        success: true,
+        totalUsers: usersToReset.length,
+        usersWithBalance: usersWithBalance,
+        totalAmountReset: totalAmountReset.toFixed(2),
+        resetBy: admin.name,
+        targetType: targetType,
+        timestamp: new Date().toISOString(),
+        details: resetDetails.slice(0, 10) // Return first 10 for preview
+      };
+    });
+    
+    res.json(result);
+    
+  } catch (error) {
+    console.error('Balance reset error:', error);
+    res.status(500).json({ message: error.message || 'Server error during balance reset.' });
+  }
+});
 
 module.exports = router;

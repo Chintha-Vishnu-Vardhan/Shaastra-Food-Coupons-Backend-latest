@@ -16,16 +16,16 @@ const VALID_ROLES = ['Core', 'Head', 'Coordinator', 'Volunteer', 'Vendor'];
 
 const VALID_DEPARTMENTS = [
   'Finance',
-  'Sponsorship',
-  'Shows & Exhibitions',
-  'Events',
-  'Hospitality',
-  'Initiatives',
-  'Competitions',
-  'Operations',
-  'Public Relations',
-  'Web Operations',
-  'Design'
+  'S&E',
+  'EnW',
+  'O&IP',
+  'Publicity',
+  'WebOps',
+  'DAM',
+  'Spons &PR',
+  'QMS',
+  'Evolve',
+  'Envisage'
 ];
 
 // Safe string trim
@@ -40,21 +40,11 @@ function validateUser(user, lineNumber) {
 
   if (!user.name) errors.push(`Line ${lineNumber}: name is required`);
   if (!user.userId) errors.push(`Line ${lineNumber}: userId (roll number) is required`);
-  if (!user.smail) errors.push(`Line ${lineNumber}: smail is required`);
-  if (!user.contact) errors.push(`Line ${lineNumber}: contact is required`);
   if (!user.department) errors.push(`Line ${lineNumber}: department is required`);
   if (!user.role) errors.push(`Line ${lineNumber}: role is required`);
 
   if (user.userId && !/^[A-Z]{2}\d{2}[A-Z]\d{3}$/i.test(user.userId)) {
     errors.push(`Line ${lineNumber}: invalid userId format (${user.userId})`);
-  }
-
-  if (user.smail && !user.smail.endsWith('@smail.iitm.ac.in')) {
-    errors.push(`Line ${lineNumber}: invalid smail (${user.smail})`);
-  }
-
-  if (user.contact && !/^\d{10}$/.test(user.contact)) {
-    errors.push(`Line ${lineNumber}: invalid contact (${user.contact})`);
   }
 
   if (user.role && !VALID_ROLES.includes(user.role)) {
@@ -77,6 +67,7 @@ function validateUser(user, lineNumber) {
 async function bulkImportFromCSV(csvFilePath) {
   const users = [];
   const errors = [];
+  const seenUserIds = new Set(); // ✅ track first occurrence
   let lineNumber = 1;
 
   console.log('📂 Reading CSV file:', csvFilePath);
@@ -92,11 +83,21 @@ async function bulkImportFromCSV(csvFilePath) {
       .on('data', (row) => {
         lineNumber++;
 
+        const userId = safeTrim(row.userid).toUpperCase();
+
+        // Skip duplicate userId rows (keep first only)
+        if (userId && seenUserIds.has(userId)) {
+          console.warn(`⚠️  Line ${lineNumber}: duplicate userId "${userId}" ignored`);
+          return;
+        }
+
+        const rawContact = safeTrim(row.contact);
+
         const user = {
           name: safeTrim(row.name),
-          userId: safeTrim(row.userid).toUpperCase(), // ✅ MATCHES MODEL
-          smail: safeTrim(row.smail).toLowerCase(),
-          contact: safeTrim(row.contact),
+          userId,
+          smail: safeTrim(row.smail),
+          contact: rawContact || 'NA',
           department: safeTrim(row.department),
           role: safeTrim(row.role),
           balance: parseFloat(row.balance) || 0,
@@ -106,7 +107,7 @@ async function bulkImportFromCSV(csvFilePath) {
           otpExpiry: null
         };
 
-        // Skip empty rows
+        // Skip fully empty rows
         if (!user.name && !user.userId) return;
 
         const validationErrors = validateUser(user, lineNumber);
@@ -115,10 +116,13 @@ async function bulkImportFromCSV(csvFilePath) {
           return;
         }
 
+        // Mark userId as seen AFTER validation
+        if (user.userId) seenUserIds.add(user.userId);
+
         users.push(user);
       })
       .on('end', async () => {
-        console.log(`✅ CSV parsed. Valid users: ${users.length}\n`);
+        console.log(`✅ CSV parsed. Valid users (unique userId): ${users.length}\n`);
 
         if (errors.length > 0) {
           console.error('❌ VALIDATION ERRORS:\n');
@@ -130,24 +134,6 @@ async function bulkImportFromCSV(csvFilePath) {
           await sequelize.authenticate();
           console.log('✅ Database connected\n');
 
-          // Check duplicates inside CSV
-          const userIds = users.map(u => u.userId);
-          const smails = users.map(u => u.smail);
-
-          const dupUserIds = [...new Set(userIds.filter((v, i) => userIds.indexOf(v) !== i))];
-          const dupSmails = [...new Set(smails.filter((v, i) => smails.indexOf(v) !== i))];
-
-          if (dupUserIds.length) {
-            console.error('❌ Duplicate userIds in CSV:', dupUserIds.join(', '));
-            return reject(new Error('Duplicate userIds in CSV'));
-          }
-
-          if (dupSmails.length) {
-            console.error('❌ Duplicate smails in CSV:', dupSmails.join(', '));
-            return reject(new Error('Duplicate smails in CSV'));
-          }
-
-          console.log('✅ No CSV duplicates\n');
           console.log('📊 Importing to database...\n');
 
           const result = await User.bulkCreate(users, {
@@ -158,9 +144,9 @@ async function bulkImportFromCSV(csvFilePath) {
           console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
           console.log('✅ IMPORT COMPLETE');
           console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-          console.log(`📥 CSV rows: ${users.length}`);
+          console.log(`📥 CSV rows accepted: ${users.length}`);
           console.log(`✅ Inserted: ${result.length}`);
-          console.log(`⚠️  Skipped (existing): ${users.length - result.length}`);
+          console.log(`⚠️  Skipped (existing in DB): ${users.length - result.length}`);
           console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
           resolve();
@@ -183,7 +169,7 @@ async function bulkImportFromCSV(csvFilePath) {
 
 const csvFile =
   process.argv[2] ||
-  path.join(__dirname, 'S&E Team details.csv');
+  path.join(__dirname, 'Copy of Shaastra 2026 Team Details - Shaastra 2026 Full team details.csv');
 
 console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 console.log('🚀 SHAASTRA TEAM BULK IMPORT');
